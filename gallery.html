@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photo Gallery</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#111;color:#eee;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+header{position:sticky;top:0;z-index:10;background:rgba(17,17,17,.94);backdrop-filter:blur(12px);padding:18px 24px;border-bottom:1px solid #292929}
+.titlebar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+h1{margin:0;font-size:22px;font-weight:600}
+#layoutToggle{border:1px solid #444;background:#202020;color:#ddd;padding:6px 12px;border-radius:20px;cursor:pointer;font-size:12px;white-space:nowrap}
+#layoutToggle:hover{background:#eee;color:#111}
+.headrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+#folders{display:flex;gap:8px;flex-wrap:wrap}
+#sorters{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+button{border:1px solid #444;background:#202020;color:#ddd;padding:7px 13px;border-radius:20px;cursor:pointer;white-space:nowrap}
+button:hover,button.active{background:#eee;color:#111}
+button.sort-btn{font-size:12px;padding:6px 11px}
+#status{padding:18px 24px;color:#999;font-size:14px}
+.gallery.mode-grid{padding:0 18px 30px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.gallery.mode-grid .card{aspect-ratio:1/1}
+.gallery.mode-grid .card img{width:100%;height:100%;object-fit:cover}
+
+.gallery.mode-flow{padding:0 18px 30px;display:flex;flex-wrap:wrap;gap:14px}
+.gallery.mode-flow .card{height:220px}
+.gallery.mode-flow .card img{width:auto;height:100%}
+
+.card{position:relative;cursor:pointer;border-radius:8px;overflow:hidden;background:#222}
+.card img{display:block;transition:transform .25s}
+.card:hover img{transform:scale(1.025)}
+.name{position:absolute;left:0;right:0;bottom:0;padding:24px 10px 9px;background:linear-gradient(transparent,rgba(0,0,0,.8));font-size:12px;opacity:0;transition:.2s}
+.card:hover .name{opacity:1}
+.name .fn{display:block;word-break:break-all}
+.name .dt{display:block;margin-top:2px;font-size:11px;color:#aaa}
+.name .dt.unknown{color:#e08a8a}
+
+#lightbox{display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.94);align-items:center;justify-content:center}
+#lightbox.show{display:flex}
+#lightbox img{max-width:92vw;max-height:88vh;object-fit:contain}
+.lbbtn{position:fixed;border:0;background:rgba(255,255,255,.12);color:#fff;width:46px;height:46px;border-radius:50%;font-size:25px}
+#close{right:24px;top:20px}
+#prev{left:24px;top:50%;transform:translateY(-50%)}
+#next{right:24px;top:50%;transform:translateY(-50%)}
+#counter{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#aaa;font-size:13px}
+@media(max-width:700px){.gallery.mode-grid{grid-template-columns:repeat(auto-fill,minmax(105px,1fr));padding:0 8px;gap:8px}.gallery.mode-flow{padding:0 8px;gap:8px}.gallery.mode-flow .card{height:130px}#sorters{justify-content:flex-start}}
+</style>
+</head>
+<body>
+<header>
+<div class="titlebar">
+  <button id="layoutToggle" title="切换排列方式"></button>
+  <h1>Photo Gallery</h1>
+</div>
+<div class="headrow">
+  <div id="folders"></div>
+  <div id="sorters"></div>
+</div>
+</header>
+<div id="status">正在读取 GitHub 图片……</div>
+<main class="gallery" id="gallery"></main>
+
+<div id="lightbox">
+<button class="lbbtn" id="close">×</button>
+<button class="lbbtn" id="prev">‹</button>
+<img id="large" alt="">
+<button class="lbbtn" id="next">›</button>
+<div id="counter"></div>
+</div>
+
+<script>
+const OWNER = "Lynnawa";
+const REPO = "piccccc";
+const BRANCH = "main";
+const ROOT = ""; // 例如 "350"，留空表示整个仓库
+
+const RAW = `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/`;
+
+const gallery = document.getElementById("gallery");
+const foldersEl = document.getElementById("folders");
+const sortersEl = document.getElementById("sorters");
+const statusEl = document.getElementById("status");
+
+let allImages = [];
+let visibleImages = [];
+let current = 0;
+let currentFolder = "ALL";
+let currentSort = "default"; // default | random | name-asc | name-desc | date-asc | date-desc
+let currentLayout = "flow"; // flow (横向瀑布流，保留原始比例) | grid (方形网格，裁剪)
+
+/* ---------- 排列方式切换 ---------- */
+const layoutToggleBtn = document.getElementById("layoutToggle");
+function updateLayoutBtnLabel(){
+  layoutToggleBtn.textContent = currentLayout==="flow" ? "▭ 瀑布流" : "⬜ 方形网格";
+}
+function setLayout(mode){
+  currentLayout = mode;
+  gallery.classList.remove("mode-flow","mode-grid");
+  gallery.classList.add("mode-"+mode);
+  updateLayoutBtnLabel();
+}
+layoutToggleBtn.onclick = ()=> setLayout(currentLayout==="flow" ? "grid" : "flow");
+setLayout(currentLayout);
+
+/* ---------- 文件名日期解析 ---------- */
+// 尝试从文件名中解析出拍摄/创建时间，支持常见命名规则：
+//  IMG_20230115_143022.jpg / IMG-20230115-143022
+//  2023-01-15 14.30.22 / 2023_01_15
+//  mmexport1690000000000（微信导出，13位毫秒时间戳）
+//  IMG_1690000000（10位秒级时间戳）
+//  纯 8 位 YYYYMMDD（前后无相邻数字）
+function parseDateFromName(name){
+  const base = name.replace(/\.[^.]+$/, ""); // 去掉扩展名
+
+  const isValidYMD = (y,m,d)=>{
+    y=+y; m=+m; d=+d;
+    if(y<1990||y>2035) return false;
+    if(m<1||m>12) return false;
+    if(d<1||d>31) return false;
+    return true;
+  };
+  const isValidHMS = (h,mi,s)=>{
+    h=+h; mi=+mi; s=+s;
+    return h<=23 && mi<=59 && s<=59;
+  };
+
+  // 0) [5~8位无关数字]_yyyymmddhhmmss_1  例如 12345678_20230115143022_1
+  let m0 = base.match(/\d{5,8}_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})_1(?:$|[^0-9])/);
+  if(m0 && isValidYMD(m0[1],m0[2],m0[3]) && isValidHMS(m0[4],m0[5],m0[6])){
+    return new Date(+m0[1], +m0[2]-1, +m0[3], +m0[4], +m0[5], +m0[6]);
+  }
+
+  // 1) YYYY[-_]?MM[-_]?DD 后紧跟 分隔符 HH[:.]?MM[:.]?SS
+  let m = base.match(/(\d{4})[-_]?(\d{2})[-_]?(\d{2})[ _T-]?(\d{2})[:.]?(\d{2})[:.]?(\d{2})/);
+  if(m && isValidYMD(m[1],m[2],m[3]) && isValidHMS(m[4],m[5],m[6])){
+    return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
+  }
+
+  // 2) 仅日期 YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD（前后不能紧邻其他数字）
+  m = base.match(/(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)/);
+  if(m && isValidYMD(m[1],m[2],m[3])){
+    return new Date(+m[1], +m[2]-1, +m[3]);
+  }
+
+  // 3) 13 位毫秒级 Unix 时间戳（如微信 mmexport1690000000000）
+  m = base.match(/(?<!\d)(1\d{12})(?!\d)/);
+  if(m){
+    const d = new Date(+m[1]);
+    if(d.getFullYear()>=1990 && d.getFullYear()<=2035) return d;
+  }
+
+  // 4) 10 位秒级 Unix 时间戳
+  m = base.match(/(?<!\d)(1\d{9})(?!\d)/);
+  if(m){
+    const d = new Date(+m[1]*1000);
+    if(d.getFullYear()>=1990 && d.getFullYear()<=2035) return d;
+  }
+
+  return null;
+}
+
+async function fetchTree(){
+  const url = `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`GitHub API ${res.status}`);
+  const data = await res.json();
+  if(data.truncated){
+    console.warn("仓库文件太多，GitHub 返回的树被截断，部分文件可能未显示。");
+  }
+  return data.tree || [];
+}
+
+async function collectImages(rootPrefix=""){
+  const tree = await fetchTree();
+  const result = [];
+  for(const item of tree){
+    if(item.type !== "blob") continue;
+    if(rootPrefix && item.path !== rootPrefix && !item.path.startsWith(rootPrefix + "/")) continue;
+    if(/\.(jpe?g|png|gif|webp|avif)$/i.test(item.path)){
+      const name = item.path.split("/").pop();
+      result.push({
+        name,
+        path:item.path,
+        url:RAW + item.path.split("/").map(encodeURIComponent).join("/"),
+        date:parseDateFromName(name)
+      });
+    }
+  }
+  return result;
+}
+
+function renderFolders(){
+  const folders = [...new Set(allImages.map(x => x.path.includes("/") ? x.path.split("/")[0] : "根目录"))];
+  foldersEl.innerHTML = "";
+  addFolderButton("全部", "ALL", true);
+  folders.forEach(f => addFolderButton(f, f, false));
+}
+
+function addFolderButton(text, value, active){
+  const b=document.createElement("button");
+  b.textContent=text;
+  b.className=active?"active":"";
+  b.onclick=()=>{
+    document.querySelectorAll("#folders button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    currentFolder = value;
+    currentSort = "default";
+    renderSorters();
+    render(value);
+  };
+  foldersEl.appendChild(b);
+}
+
+/* ---------- 排序控件 ---------- */
+// 名称排序在"全部"栏隐藏（跨文件夹按文件名排没有意义）；
+// 随机 / 拍摄时间排序 在任何栏目都可用（时间是跨文件夹也成立的维度）。
+function renderSorters(){
+  sortersEl.innerHTML = "";
+  addSortButton("🔀 随机", "random");
+  if(currentFolder !== "ALL"){
+    addSortButton("名称 A→Z", "name-asc");
+    addSortButton("名称 Z→A", "name-desc");
+  }
+  addSortButton("时间 ↑", "date-asc");
+  addSortButton("时间 ↓", "date-desc");
+}
+
+function addSortButton(text, value){
+  const b=document.createElement("button");
+  b.textContent=text;
+  b.className="sort-btn"+(currentSort===value?" active":"");
+  b.onclick=()=>{
+    currentSort = value;
+    document.querySelectorAll("#sorters button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    applySort();
+    renderCards();
+  };
+  sortersEl.appendChild(b);
+}
+
+function applySort(){
+  switch(currentSort){
+    case "random":
+      for(let i=visibleImages.length-1;i>0;i--){
+        const j=Math.floor(Math.random()*(i+1));
+        [visibleImages[i],visibleImages[j]]=[visibleImages[j],visibleImages[i]];
+      }
+      break;
+    case "name-asc":
+      visibleImages.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+      break;
+    case "name-desc":
+      visibleImages.sort((a,b)=>b.name.localeCompare(a.name,undefined,{numeric:true}));
+      break;
+    case "date-asc":
+      visibleImages.sort((a,b)=>dateSortValue(a)-dateSortValue(b));
+      break;
+    case "date-desc":
+      visibleImages.sort((a,b)=>dateSortValue(b)-dateSortValue(a));
+      break;
+    default:
+      visibleImages.sort((a,b)=>a.path.localeCompare(b.path,undefined,{numeric:true}));
+  }
+}
+// 解析不到时间的文件排在最后（升序时用 +Infinity，降序时同样用 +Infinity 再整体反转即可）
+function dateSortValue(item){
+  return item.date ? item.date.getTime() : Infinity;
+}
+
+function render(folder="ALL"){
+  visibleImages = folder==="ALL"
+    ? [...allImages]
+    : allImages.filter(x => (x.path.split("/")[0] || "根目录")===folder);
+
+  applySort();
+  renderCards();
+}
+
+function formatParsedDate(d){
+  if(!d) return `<span class="dt unknown">日期：未能识别</span>`;
+  const pad=n=>String(n).padStart(2,"0");
+  const hasTime = d.getHours()||d.getMinutes()||d.getSeconds();
+  const dateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const timeStr = hasTime ? ` ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` : "";
+  return `<span class="dt">日期：${dateStr}${timeStr}</span>`;
+}
+
+function renderCards(){
+  gallery.innerHTML="";
+  visibleImages.forEach((item,i)=>{
+    const card=document.createElement("div");
+    card.className="card";
+    card.innerHTML=`<img loading="lazy" src="${item.url}" alt="${escapeHtml(item.name)}"><div class="name"><span class="fn">${escapeHtml(item.name)}</span>${formatParsedDate(item.date)}</div>`;
+    card.onclick=()=>openLightbox(i);
+    gallery.appendChild(card);
+  });
+  statusEl.textContent=`共 ${visibleImages.length} 张图片`;
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+
+function openLightbox(i){
+  current=i;
+  updateLightbox();
+  document.getElementById("lightbox").classList.add("show");
+}
+function updateLightbox(){
+  const item=visibleImages[current];
+  document.getElementById("large").src=item.url;
+  document.getElementById("large").alt=item.name;
+  document.getElementById("counter").textContent=`${current+1} / ${visibleImages.length}`;
+}
+function closeLightbox(){document.getElementById("lightbox").classList.remove("show")}
+function move(n){
+  current=(current+n+visibleImages.length)%visibleImages.length;
+  updateLightbox();
+}
+
+document.getElementById("close").onclick=closeLightbox;
+document.getElementById("prev").onclick=()=>move(-1);
+document.getElementById("next").onclick=()=>move(1);
+document.getElementById("lightbox").onclick=e=>{if(e.target.id==="lightbox")closeLightbox()};
+document.addEventListener("keydown",e=>{
+  if(!document.getElementById("lightbox").classList.contains("show")) return;
+  if(e.key==="Escape")closeLightbox();
+  if(e.key==="ArrowLeft")move(-1);
+  if(e.key==="ArrowRight")move(1);
+});
+
+(async()=>{
+  try{
+    allImages=await collectImages(ROOT);
+    allImages.sort((a,b)=>a.path.localeCompare(b.path,undefined,{numeric:true}));
+    renderFolders();
+    renderSorters();
+    render();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent="读取失败。请确认仓库是 Public，并检查 OWNER / REPO / BRANCH 设置。";
+  }
+})();
+</script>
+</body>
+</html>
