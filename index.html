@@ -12,6 +12,8 @@ header{position:sticky;top:0;z-index:10;background:rgba(17,17,17,.94);backdrop-f
 h1{margin:0;font-size:22px;font-weight:600}
 #layoutToggle{border:1px solid #444;background:#202020;color:#ddd;padding:6px 12px;border-radius:20px;cursor:pointer;font-size:12px;white-space:nowrap}
 #layoutToggle:hover{background:#eee;color:#111}
+#calcLink{margin-left:auto;border:1px solid #444;background:#202020;color:#ddd;padding:6px 12px;border-radius:20px;cursor:pointer;font-size:12px;white-space:nowrap;text-decoration:none}
+#calcLink:hover{background:#eee;color:#111}
 .headrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 #folders{display:flex;gap:8px;flex-wrap:wrap}
 #sorters{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
@@ -56,6 +58,7 @@ button.sort-btn{font-size:12px;padding:6px 11px}
 <div class="titlebar">
   <button id="layoutToggle" title="切换排列方式"></button>
   <h1>Photo Gallery</h1>
+  <a id="calcLink" href="hm-calc.html" title="时间计算器">⏱ 时间计算器</a>
 </div>
 <div class="headrow">
   <div id="folders"></div>
